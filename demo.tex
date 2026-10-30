@@ -1,0 +1,182 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage[hidelinks]{hyperref}
+
+\theoremstyle{definition}
+\newtheorem{definition}{Definição}[section]
+
+\theoremstyle{plain}
+\newtheorem{theorem}[definition]{Teorema}
+\newtheorem{lemma}[definition]{Lema}
+\newtheorem{corollary}[definition]{Corolário}
+
+\title{Demonstração de Lea Overleaf}
+\author{Ximena Gomez}
+\date{Outubro de 2026}
+
+\begin{document}
+
+\maketitle
+
+\section*{Objetivo da demonstração}
+
+Vamos usar Lea Overleaf para transformar definições e enunciados
+matemáticos em código Lean 4.
+
+A demonstração começa com uma função simples e avança para provas
+que reutilizam resultados anteriores. Em uma delas, pedimos
+explicitamente que a prova seja dividida em etapas locais.
+
+Os exemplos de \texttt{possibilities}, \texttt{Day} e
+\texttt{isWeekend} foram adaptados de
+\href{https://emap-nlp.github.io/book/}
+{Semântica computacional com Lean}.
+
+\section{Contagem de possibilidades}
+
+Se cada fato básico pode ser verdadeiro ou falso, cada novo fato
+duplica a quantidade de possibilidades.
+
+\subsection{Criar uma definição}
+
+\begin{definition}[Função de contagem]
+\label{possibilities}
+A função recursiva chamada \texttt{possibilities}, tal que
+\[
+  \operatorname{possibilities}(0)=1
+\]
+e, para todo número natural $n$,
+\[
+  \operatorname{possibilities}(n+1)
+  =2\operatorname{possibilities}(n).
+\]
+\end{definition}
+
+
+\subsection{Provar uma propriedade imediata}
+
+\begin{lemma}[Caso base]
+\label{possibilities_zero}
+A função de contagem satisfaz
+\[
+  \operatorname{possibilities}(0)=1.
+\]
+\end{lemma}
+
+\subsection{Provar por indução}
+
+\begin{theorem}[Forma fechada]
+\label{possibilities_pow}
+
+Para todo número natural $n$,
+\[
+  \operatorname{possibilities}(n)=2^n.
+\]
+\end{theorem}
+
+\subsection{Reutilizar um teorema}
+
+\begin{corollary}[Dez fatos]
+\label{possibilities_ten}
+Para dez fatos básicos, existem $1024$ possibilidades:
+\[
+  \operatorname{possibilities}(10)=1024.
+\]
+\end{corollary}
+
+\begin{lemma}[Positividade]
+\label{possibilities_positive}\
+Para todo número natural $n$,
+\[
+  0<\operatorname{possibilities}(n).
+\]
+\end{lemma}
+
+\subsection{Dividir uma prova em etapas}
+
+\begin{theorem}[Combinação de grupos de fatos]
+\label{possibilities_add}
+Para todos os números naturais $n$ e $m$,
+\[
+  \operatorname{possibilities}(n+m)
+  =\operatorname{possibilities}(n)
+   \operatorname{possibilities}(m).
+\]
+\end{theorem}
+
+
+\begin{corollary}[Dois grupos do mesmo tamanho]
+\label{possibilities_double}
+% lea: formalize label=possibilities_double uses={possibilities, possibilities_add} context={Use possibilities_add com os dois argumentos iguais a n. Relacione o produto de um numero por si mesmo com seu quadrado. Nao refaca a prova por inducao.}
+Para todo número natural $n$,
+\[
+  \operatorname{possibilities}(n+n)
+  =\bigl(\operatorname{possibilities}(n)\bigr)^2.
+\]
+\end{corollary}
+
+\section{Dias da semana}
+
+Agora vamos criar um tipo indutivo e uma função booleana.
+
+\begin{definition}[Dias e fim de semana]
+\label{isWeekend}
+% lea: define label=isWeekend context={No mesmo arquivo, crie o tipo Day e depois a funcao isWeekend. Use casamento de padroes. Mantenha isWeekend como declaracao principal.}
+Defina um tipo indutivo chamado \texttt{Day}, com exatamente
+os sete construtores:
+\[
+\begin{gathered}
+\texttt{monday},\quad \texttt{tuesday},\quad
+\texttt{wednesday},\quad \texttt{thursday},\\
+\texttt{friday},\quad \texttt{saturday},\quad
+\texttt{sunday}.
+\end{gathered}
+\]
+
+Defina também a função \texttt{isWeekend},
+de \texttt{Day} para \texttt{Bool}.
+Ela deve retornar \texttt{true} para sábado e domingo,
+e \texttt{false} para os demais dias.
+\end{definition}
+
+\begin{theorem}[Caracterização do fim de semana]
+\label{isWeekend_iff}
+Para todo $d$ do tipo \texttt{Day},
+\[
+  \texttt{isWeekend}\ d=\texttt{true}
+  \quad\Longleftrightarrow\quad
+  d=\texttt{Day.saturday}
+  \ \lor\
+  d=\texttt{Day.sunday}.
+\]
+\end{theorem}
+
+\begin{theorem}[Dias que não são fim de semana]
+\label{notWeekend_iff}
+Para todo $d$ do tipo \texttt{Day},
+\[
+\begin{aligned}
+  \texttt{isWeekend}\ d=\texttt{false}
+  \quad\Longleftrightarrow\quad
+  &d\ne\texttt{Day.saturday}\\
+  &{}\land d\ne\texttt{Day.sunday}.
+\end{aligned}
+\]
+\end{theorem}
+
+\section{ uma afirmação falsa}
+
+\begin{theorem}[Afirmação ]
+\label{every_day_weekend}
+Para todo dia $d$ do tipo \texttt{Day},
+\[
+  \texttt{isWeekend}\ d=\texttt{true}.
+\]
+\end{theorem}
+
+\end{document}
