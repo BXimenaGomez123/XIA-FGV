@@ -9,7 +9,6 @@ from pathlib import Path
 
 from prompt import SYSTEM_PROMPT
 ENVIRONMENTS = r"definition|theorem|lemma|corollary|proposition|example"
-TOKEN = re.compile(r"\\(begin|end)\{(" + ENVIRONMENTS + r"|proof)\}")
 IDENTIFIER = r"[A-Za-z][A-Za-z0-9_]*"
 ACCEPTED = {"defined", "proved", "disproved"}
 
@@ -25,30 +24,58 @@ class Target:
 
 
 def mask_comments(source):
-    """Keep offsets/newlines so extracted source is byte-for-byte unchanged."""
-    return re.sub(r"(?<!\\)%[^\n]*", lambda m: " " * len(m[0]), source)
+    """Mask TeX comments, respecting escaped percent signs and keeping offsets."""
+    chars = list(source)
+    i = 0
+    while i < len(source):
+        if source[i] == "%":
+            backslashes, j = 0, i - 1
+            while j >= 0 and source[j] == "\\":
+                backslashes += 1
+                j -= 1
+            if backslashes % 2 == 0:
+                end = source.find("\n", i)
+                end = len(source) if end == -1 else end
+                chars[i:end] = " " * (end - i)
+                i = end
+                continue
+        i += 1
+    return "".join(chars)
 
 
 def extract_targets(source):
     """Small scanner for common, non-nested theorem environments, not full TeX."""
 
     masked = mask_comments(source)
+    kinds = {kind: kind for kind in ENVIRONMENTS.split("|")}
+    # Common paper aliases: \newtheorem{thm}{Theorem}, including shared counters.
+    declarations = re.findall(
+        r"\\newtheorem\*?\s*\{([^}]+)\}\s*(?:\[[^\]]*\]\s*)?\{([^}]+)\}",
+        masked,
+    )
+    for alias, title in declarations:
+        canonical = title.strip().lower()
+        if canonical in kinds.values():
+            kinds[alias] = canonical
+    environment_names = "|".join(re.escape(name) for name in [*kinds, "proof"])
+    token = re.compile(r"\\(begin|end)\s*\{(" + environment_names + r")(\*?)\}")
     document = re.search(r"\\begin\{document\}", masked)
     start = document.end() if document else 0
     end_document = re.search(r"\\end\{document\}", masked[start:])
     end = start + end_document.start() if end_document else len(source)
     stack, spans = [], []
 
-    for match in TOKEN.finditer(masked, start, end):
-        action, kind = match.groups()
+    for match in token.finditer(masked, start, end):
+        action, raw_kind, star = match.groups()
+        kind = kinds.get(raw_kind, raw_kind)
         if action == "begin":
             if stack:
                 raise ValueError("Nested mathematical/proof environments are unsupported.")
-            stack.append((kind, match.start()))
+            stack.append((raw_kind + star, kind, match.start()))
         else:
-            if not stack or stack[-1][0] != kind:
-                raise ValueError(f"Unmatched environment ending: {kind}")
-            _, left = stack.pop()
+            if not stack or stack[-1][0] != raw_kind + star:
+                raise ValueError(f"Unmatched environment ending: {raw_kind + star}")
+            _, kind, left = stack.pop()
             spans.append((kind, left, match.end()))
     if stack:
         raise ValueError(f"Unclosed environment: {stack[-1][0]}")
@@ -62,8 +89,13 @@ def extract_targets(source):
             next_kind, next_left, next_right = spans[i + 1]
             if next_kind == "proof" and not masked[right:next_left].strip():
                 right = next_right
-        text = source[left:right]
-        labels = re.findall(r"\\label\{([^}]+)\}", mask_comments(text))
+        # Comments immediately above an environment may hold Lea author hints.
+        preceding = re.search(r"(?:^[ \t]*%[^\n]*\n)+[ \t]*$", source[:left], re.MULTILINE)
+        hint_start = preceding.start() if preceding else left
+        text = source[hint_start:right]
+        # A label inside the following proof does not name the statement.
+        statement = source[left:spans[i][2]]
+        labels = re.findall(r"\\label\{([^}]+)\}", mask_comments(statement))
         label = labels[0] if labels else f"{kind}_{len(targets) + 1}"
         name = re.sub(r"[^A-Za-z0-9_]", "_", label)
         if not name or not name[0].isalpha():
@@ -79,13 +111,24 @@ def extract_targets(source):
         targets.append(Target(kind, name, label, text, source.count("\n", 0, left) + 1, uses))
     if not targets:
         raise ValueError("No supported mathematical environments found in the document.")
+    known_labels = {target.label for target in targets}
+    for target in targets:
+        # Explicit references to other detected targets are also dependencies.
+        references = re.findall(r"\\(?:ref|eqref|autoref|cref|Cref)\{([^}]+)\}",
+                                mask_comments(target.source))
+        for group in references:
+            for reference in group.split(","):
+                reference = reference.strip()
+                if reference in known_labels and reference != target.label:
+                    target.uses.append(reference)
+        target.uses = list(dict.fromkeys(target.uses))
     return targets
 
 
 def generate(model, messages):
     # Lazy import lets parsing/help/offline tests run without an API or LiteLLM.
     from litellm import completion
-    response = completion(model=model, messages=messages, timeout=120)
+    response = completion(model=model, messages=messages, timeout=120, num_retries=2)
     text = response.choices[0].message.content
     if not text or not text.strip():
         raise RuntimeError("The model returned an empty response.")
@@ -145,7 +188,7 @@ def parse_response(raw, target):
     result = json.loads(raw)
     if not isinstance(result, dict) or set(result) != {"status", "code", "explanation", "source_issues"}:
         raise ValueError("Return exactly status, code, explanation, source_issues as JSON.")
-    if result["status"] not in ACCEPTED | {"needs_review"}:
+    if not isinstance(result["status"], str) or result["status"] not in ACCEPTED | {"needs_review"}:
         raise ValueError("Invalid status.")
     if not isinstance(result["code"], str) or not isinstance(result["explanation"], str):
         raise ValueError("code and explanation must be strings.")
@@ -161,9 +204,10 @@ def parse_response(raw, target):
     code = lean_tokens(result["code"])
     if re.search(r"\b(sorry|admit|axiom|sorryAx|native_decide)\b", code):
         raise ValueError("Unproved assumptions/placeholders or native_decide are forbidden.")
-    if re.search(r"(?m)^\s*(import|namespace|section|end)\b", code):
-        # Indented `end` can terminate constructs; top-level sections are unnecessary.
-        raise ValueError("Return declarations only, without imports/namespaces/sections/end.")
+    if not code.strip():
+        raise ValueError("An accepted status must include Lean declarations.")
+    if re.search(r"(?m)^\s*(import|namespace|section|end|set_option|macro|syntax|elab|run_elab|run_meta|initialize)\b|(?m:^\s*#)", code):
+        raise ValueError("Return declarations only, without imports, sections or compiler/metaprogramming commands.")
     expected = target.name + "_negation" if status == "disproved" else target.name
     kinds = "def|abbrev|inductive|structure" if status == "defined" else "theorem|lemma"
     if not re.search(r"\b(?:" + kinds + r")\s+" + re.escape(expected) + r"\b", code):
@@ -194,78 +238,148 @@ def write_report(directory, records):
     (directory / "report.md").write_text("\n".join(lines), encoding="utf-8")
 
 
-def review(source, targets, project, directory, model, attempts, generator=generate, checker=lean_check):
+def new_record(target):
+    """A target starts pending; only the host can mark it verified."""
+    return {
+        **asdict(target),
+        "status": "needs_review",
+        "attempts": 0,
+        "explanation": "No se obtuvo una formalización verificada.",
+        "source_issues": [],
+        "diagnostics": "",
+        "verified": False,
+        "model_status": None,
+    }
+
+
+def build_messages(source, target, prefix, records):
+    """Start one conversation per target, with the full paper as context."""
+    payload = {
+        "document": source,
+        "target": asdict(target),
+        "negation_name": target.name + "_negation",
+        "checked_prefix": prefix,
+        "previous_results": [
+            {"name": row["name"], "status": row["status"]}
+            for row in records
+        ],
+    }
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+
+
+def log_attempt(directory, event):
+    """Persist the exact messages, response and compiler diagnostics."""
+    with (directory / "trace.jsonl").open("a", encoding="utf-8") as log:
+        log.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
+def review_target(target, messages, prefix, project, directory, model, attempts,
+                  generator, checker):
+    """Try one target. Failed candidates never modify the checked prefix."""
+    row = new_record(target)
+    candidate = directory / "Candidate.lean"
+
+    for attempt in range(1, attempts + 1):
+        print(f"{target.name}: attempt {attempt}/{attempts}", file=sys.stderr)
+        row["attempts"] = attempt
+        event = {"target": target.name, "attempt": attempt,
+                 "messages": list(messages)}
+        raw = None
+        try:
+            raw = generator(model, messages)
+            event["response"] = raw
+            result = parse_response(raw, target)
+            row["model_status"] = result["status"]
+            row["source_issues"] = result["source_issues"]
+            row["explanation"] = result["explanation"]
+            row["diagnostics"] = ""
+
+            # Uncertainty is a review result, not a compiler error to force away.
+            if result["status"] == "needs_review":
+                event["result"] = "needs_review"
+                break
+
+            combined_code = prefix + result["code"].strip() + "\n\n"
+            candidate.write_text(combined_code, encoding="utf-8")
+            attempt_file = directory / f"{target.name}_attempt_{attempt}.lean"
+            attempt_file.write_text(combined_code, encoding="utf-8")
+
+            relative_path = str(candidate.relative_to(project))
+            valid, diagnostics = checker(project, relative_path)
+            row["diagnostics"] = diagnostics
+            event.update(diagnostics=diagnostics, compiler_passed=bool(valid))
+
+            if valid:
+                row["status"] = result["status"]
+                row["verified"] = True
+                prefix = combined_code
+                event["result"] = row["status"]
+                break
+
+            feedback = (
+                "Compilation failed. Correct the NEW code preserving the original "
+                "claim, source proof method and checked prefix.\n" + diagnostics
+            )
+        except (ValueError, RuntimeError) as error:
+            feedback = str(error)
+            row["diagnostics"] = feedback
+            event["error"] = feedback
+        except Exception as error:
+            # Preserve partial work on provider, OS or unexpected failures.
+            row["diagnostics"] = f"{type(error).__name__}: {error}"
+            event["error"] = row["diagnostics"]
+            break
+        finally:
+            log_attempt(directory, event)
+
+        # The next attempt sees both the previous answer and host feedback.
+        if raw is not None:
+            messages.append({"role": "assistant", "content": raw})
+        messages.append({"role": "user", "content": feedback})
+
+    if not row["verified"] and row["diagnostics"]:
+        row["explanation"] = (
+            "No se verificó este bloque. La explicación del modelo no constituye "
+            "un resultado verificado. " + row["explanation"]
+        )
+    return row, prefix
+
+
+def review(source, targets, project, directory, model, attempts,
+           generator=generate, checker=lean_check):
+    """Review in source order, accumulating only compiler-checked declarations."""
     
     prefix = "import Mathlib\n\n"
-    records, completed = [], set()
-    trace = directory / "trace.jsonl"
-    candidate = directory / "Candidate.lean"
+    records = []
+    completed = set()
     artifact = directory / "Formalization.lean"
-    (directory / "source.tex").write_text(source, encoding="utf-8")
-    
+    (directory / "source.tex").write_bytes(source.encode("utf-8"))
+    artifact.write_text(prefix, encoding="utf-8")
+
     for target in targets:
-        row = {**asdict(target), "status": "needs_review", "attempts": 0,
-               "explanation": "No se obtuvo una formalización verificada.",
-               "source_issues": [], "diagnostics": "", "verified": False}
-        missing = [x for x in target.uses if x not in completed]
+        missing = [dependency for dependency in target.uses
+                   if dependency not in completed]
         if missing:
-            row.update(status="blocked", explanation="Dependencias no verificadas: " + ", ".join(missing))
+            row = new_record(target)
+            row["status"] = "blocked"
+            row["explanation"] = "Dependencias no verificadas: " + ", ".join(missing)
         else:
-            payload = {"document": source, "target": asdict(target),
-                       "negation_name": target.name + "_negation",
-                       "checked_prefix": prefix,
-                       "previous_results": [{"name": x["name"], "status": x["status"]} for x in records]}
-            messages = [{"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
-            for attempt in range(1, attempts + 1):
-                print(f"{target.name}: attempt {attempt}/{attempts}", file=sys.stderr)
-                row["attempts"] = attempt
-                event = {"target": target.name, "attempt": attempt, "messages": list(messages)}
-                raw = None
-                try:
-                    raw = generator(model, messages)
-                    event["response"] = raw
-                    result = parse_response(raw, target)
-                    row["source_issues"] = result["source_issues"]
-                    row["explanation"] = result["explanation"]
-                    if result["status"] == "needs_review":
-                        event["result"] = "needs_review"
-                        break
-                    code = prefix + result["code"].strip() + "\n\n"
-                    candidate.write_text(code, encoding="utf-8")
-                    (directory / f"{target.name}_attempt_{attempt}.lean").write_text(code, encoding="utf-8")
-                    valid, errors = checker(project, str(candidate.relative_to(project)))
-                    row["diagnostics"] = errors
-                    event.update(diagnostics=errors, compiler_passed=bool(valid))
-                    if valid:
-                        prefix = code
-                        artifact.write_text(prefix, encoding="utf-8")
-                        row.update(status=result["status"], verified=True)
-                        # A refuted proposition is not available as a proved dependency.
-                        if result["status"] != "disproved":
-                            completed.update({target.label, target.name})
-                        break
-                    feedback = "Compilation failed. Correct the NEW code preserving the original claim and checked prefix.\n" + errors
-                except (ValueError, RuntimeError) as error:
-                    feedback = str(error)
-                    event["error"] = feedback
-                    row["diagnostics"] = feedback
-                except Exception as error:
-                    # Provider/OS failures keep partial results and do not consume more API calls.
-                    row["diagnostics"] = f"{type(error).__name__}: {error}"
-                    event["error"] = row["diagnostics"]
-                    break
-                finally:
-                    with trace.open("a", encoding="utf-8") as log:
-                        log.write(json.dumps(event, ensure_ascii=False) + "\n")
-                if raw is not None:
-                    messages.append({"role": "assistant", "content": raw})
-                messages.append({"role": "user", "content": feedback})
-            if not row["verified"] and row["diagnostics"]:
-                row["explanation"] = "No se verificó este bloque. La explicación del modelo no constituye un resultado verificado. " + row["explanation"]
+            messages = build_messages(source, target, prefix, records)
+            row, prefix = review_target(
+                target, messages, prefix, project, directory, model, attempts,
+                generator, checker,
+            )
+            artifact.write_text(prefix, encoding="utf-8")
+            if row["status"] in {"defined", "proved"}:
+                completed.update({target.label, target.name})
+
         records.append(row)
         write_report(directory, records)
         print(f"{target.name}: {row['status']}")
+
     return records
 
 

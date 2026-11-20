@@ -1,0 +1,35 @@
+\documentclass{article}
+\usepackage{amsmath,amssymb,amsthm}
+\newtheorem{definition}{Definition}
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\begin{document}
+\section{Successor on natural numbers}
+Throughout this section, $n\in\mathbb{N}$.
+
+\begin{definition}\label{successor}
+Let $f:\mathbb{N}\to\mathbb{N}$ be defined by $f(n)=n+1$.
+\end{definition}
+
+% lea: formalize uses={successor}
+\begin{lemma}\label{successor_positive}
+For every natural number $n$, $f(n)>0$.
+\end{lemma}
+\begin{proof}
+Since $n\geq 0$, we have $n+1>0$.
+\end{proof}
+
+% lea: formalize uses={successor}
+\begin{theorem}\label{successor_identity}
+For every natural number $n$, $f(n)=n$.
+\end{theorem}
+
+% lea: formalize uses={successor_identity}
+\begin{lemma}\label{identity_consequence}
+In particular, $f(0)=0$ by Theorem~\ref{successor_identity}.
+\end{lemma}
+
+\begin{theorem}\label{ambiguous}
+The sequence converges.
+\end{theorem}
+\end{document}
