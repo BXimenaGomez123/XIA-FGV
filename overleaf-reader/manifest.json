@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Xia — lectura de Overleaf",
+  "version": "0.1.2",
+  "description": "Prototipo: lee el archivo LaTeX activo y muestra sus bloques sin modificarlo.",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://overleaf.com/project/*",
+        "https://www.overleaf.com/project/*"
+      ],
+      "js": [
+        "editor_bridge.js"
+      ],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://overleaf.com/project/*",
+        "https://www.overleaf.com/project/*"
+      ],
+      "js": [
+        "overleaf_reader.js"
+      ],
+      "world": "ISOLATED",
+      "run_at": "document_idle"
+    }
+  ]
+}
